@@ -1,0 +1,382 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    ports:
+      - "3306:3306"
+    environment:
+      # YAML 에서 따옴표 없이 0000 은 8진수 0 으로 해석될 수 있음 → root 비밀번호가 "0" 이 됨. 반드시 문자열로 고정.
+      MYSQL_ROOT_PASSWORD: "0000"
+      MYSQL_DATABASE: talktrip
+      MYSQL_USER: talktrip
+      MYSQL_PASSWORD: talktrip123
+      MYSQL_ROOT_HOST: '%'
+    command: --default-authentication-plugin=mysql_native_password
+    # 호스트 디렉터리 바인드 마운트 → compose down -v 로 네임드 볼륨을 지워도 DB 파일은 tt/docker-data/mysql 에 남음
+    volumes:
+      - ./docker-data/mysql:/var/lib/mysql
+      # 최초 빈 데이터 디렉터리일 때만 실행: talktrip@'%' 로 컨테이너 IP에서 접속 허용
+      - ./docker/mysql/init/00-create-databases.sql:/docker-entrypoint-initdb.d/00-create-databases.sql:ro
+      - ./docker/mysql/init/01-remote-grants.sql:/docker-entrypoint-initdb.d/01-remote-grants.sql:ro
+    restart: unless-stopped
+    networks:
+      - talktrip-network
+    # Windows 호스트 바인드 마운트(./docker-data/mysql)에서는 InnoDB 복구·초기화가 수십 초 걸릴 수 있음 → start_period 짧으면 unhealthy·소켓 2002
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+
+  redis:
+    image: redis:7-alpine
+    container_name: talktrip-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - talktrip-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru # AOF 활성화(+ 기본 save 스냅샷) → 하이브리드(RDB+AOF)
+
+
+
+  talktrip-chat-service:
+    build: ../talktrip-chatting-service
+    container_name: talktrip-chatting-service
+    ports:
+      - "8090:8090"
+    environment:
+      - SERVER_PORT=8090
+      - SPRING_PROFILES_ACTIVE=docker
+      # MySQL 연동: 데이터 영속화 (tt/docker-compose.yml 의 mysql 서비스 공유)
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=talktrip
+      - MYSQL_PASSWORD=talktrip123
+      # 채팅 MSA는 chatDB 사용 (talktrip-chatting-service/application.yaml 기준)
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/chatDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_SESSION_STORE_TYPE=none
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # compose 네트워크 내부는 PLAINTEXT_INTERNAL(kafka:39092). KAFKA_HOST 불필요(다른 MSA와 동일).
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  talktrip-order-email-service:
+    build: ../talktrip-order-email-service
+    container_name: talktrip-order-email-service
+    ports:
+      - "18081:8081"
+    environment:
+      - SERVER_PORT=8081
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-order-purchases-service:
+    build: ../talktrip-order-purchases-service
+    container_name: talktrip-order-purchases-service
+    ports:
+      - "18085:8085"
+    environment:
+      - SERVER_PORT=8085
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/orderDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - TZ=Asia/Seoul
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-product-click-service:
+    build: ../talktrip-product-click-service
+    container_name: talktrip-product-click-service
+    ports:
+      - "18084:8084"
+    environment:
+      - SERVER_PORT=8084
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-stats-service:
+    build: ../talktrip-stats-service
+    container_name: talktrip-stats-service
+    ports:
+      - "18082:8082"
+    environment:
+      - SERVER_PORT=8082
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/statsDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TZ=Asia/Seoul
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-trending-service:
+    build: ../talktrip-trending-service
+    container_name: talktrip-trending-service
+    ports:
+      - "18083:8083"
+    environment:
+      - SERVER_PORT=8083
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/trendDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - TZ=Asia/Seoul
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  
+
+  # Kafka 스택 (KRaft 단일 노드)
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: talktrip-kafka
+    ports:
+      - "9092:9092"   # PLAINTEXT — 광고 ${KAFKA_HOST}:9092 · 호스트/외부 클라이언트용 bootstrap
+      - "19092:19092" # PLAINTEXT_1 — 광고 ${KAFKA_HOST}:19092 · 다중 bootstrap 엔드포인트(호스트와 동일 IP, 포트만 다름)
+      - "19093:19093" # PLAINTEXT_2 — 광고 ${KAFKA_HOST}:19093 · 위와 동일
+      - "39092:39092" # PLAINTEXT_INTERNAL — 광고 kafka:39092만 · compose 내부(talktrip-* 서비스, 브로커 간) 전용; 호스트 매핑은 디버그용 선택
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_1://0.0.0.0:19092,PLAINTEXT_2://0.0.0.0:19093,PLAINTEXT_INTERNAL://0.0.0.0:39092,CONTROLLER://0.0.0.0:9093
+      # 호스트/IDE에서 9092 등으로 붙을 때 광고 주소. 미설정 시 localhost(tt/.env 또는 --env-file ..\\.env 로 덮어쓰기).
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_HOST:-localhost}:9092,PLAINTEXT_1://${KAFKA_HOST:-localhost}:19092,PLAINTEXT_2://${KAFKA_HOST:-localhost}:19093,PLAINTEXT_INTERNAL://kafka:39092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_1:PLAINTEXT,PLAINTEXT_2:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Kafka 토픽 자동 생성 (Kafka healthy 이후 1회 실행)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: talktrip-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - talktrip-network
+    restart: "no"
+    environment:
+      # 필요하면 여기 토픽들만 프로젝트에 맞게 수정하면 됨
+      # 형식: "<topic>:<partitions>:<replicationFactor>"
+      KAFKA_INIT_TOPICS: >-
+        product-click:3:1
+        order-created:3:1
+        payment-success:3:1
+        product-click-stats:3:1
+        order-purchase-stats:3:1
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        BOOTSTRAP="kafka:39092"
+        echo "[kafka-init] bootstrap=$${BOOTSTRAP}"
+
+        for spec in $${KAFKA_INIT_TOPICS}; do
+          topic="$${spec%%:*}"
+          rest="$${spec#*:}"
+          partitions="$${rest%%:*}"
+          rf="$${rest#*:}"
+
+          echo "[kafka-init] ensure topic=$${topic} partitions=$${partitions} rf=$${rf}"
+          kafka-topics --bootstrap-server "$${BOOTSTRAP}" \
+            --create --if-not-exists \
+            --topic "$${topic}" \
+            --partitions "$${partitions}" \
+            --replication-factor "$${rf}"
+        done
+
+        echo "[kafka-init] done"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: talktrip-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8086:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: talktrip-local
+      # UI 백엔드는 이 compose 네트워크 안에서 동작 → 브로커는 서비스명 kafka + PLAINTEXT_INTERNAL(39092).
+      # KAFKA_HOST=localhost 를 쓰면 컨테이너의 localhost는 브로커가 아니어서 METADATA 오류·브라우저만 하얀 화면이 난다.
+      # 원격 클러스터(MSK 등)만 UI로 볼 때는 호스트에서 KAFKA_UI_BOOTSTRAP_SERVERS=b-1.xxx:9092,... 로 덮어쓴다.
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: ${KAFKA_UI_BOOTSTRAP_SERVERS:-kafka:39092}
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# k6 성능 테스트
+  k6:
+    image: grafana/k6:latest
+    container_name: talktrip-k6
+    volumes:
+      - ./performance-tests/k6:/scripts
+    networks:
+      - talktrip-network
+    depends_on:
+      - nginx
+    command: run /scripts/chat-load-test.js
+    profiles:
+      - testing
+
+  # k6 프로젝트 테스트
+  k6-project:
+    image: grafana/k6:latest
+    container_name: talktrip-k6-project
+    volumes:
+      - ./performance-tests/k6:/scripts
+    networks:
+      - talktrip-network
+    depends_on:
+      - nginx
+    command: run /scripts/talktrip-api-test.js
+    profiles:
+      - testing
+
+  # k6 대시보드 (Grafana + InfluxDB)
+  influxdb:
+    image: influxdb:1.8
+    container_name: talktrip-influxdb
+    ports:
+      # 호스트 8086은 kafka-ui와 충돌 → Influx 호스트 접속은 8087 (컨테이너 내부는 여전히 8086)
+      - "8087:8086"
+    environment:
+      - INFLUXDB_DB=k6
+      - INFLUXDB_ADMIN_USER=admin
+      - INFLUXDB_ADMIN_PASSWORD=admin123
+    volumes:
+      - influxdb_data:/var/lib/influxdb
+    networks:
+      - talktrip-network
+    profiles:
+      - testing
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: talktrip-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./performance-tests/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./performance-tests/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - talktrip-network
+    depends_on:
+      - influxdb
+    profiles:
+      - testing
+
+  # Locust 성능 테스트
+  locust:
+    image: locustio/locust:latest
+    container_name: talktrip-locust
+    ports:
+      - "8089:8089"  # Locust 웹 UI
+    volumes:
+      - ./performance-tests/locust:/mnt/locust
+    networks:
+      - talktrip-network
+    depends_on:
+      - nginx
+    command: -f /mnt/locust/locustfile.py --host=http://nginx --web-host=0.0.0.0
+    profiles:
+      - testing
+
+volumes:
+  redis_data:
+  influxdb_data:
+  grafana_data:
+
+networks:
+  talktrip-network:
+    driver: bridge
+

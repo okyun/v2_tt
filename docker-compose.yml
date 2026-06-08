@@ -18,6 +18,9 @@ services:
       # 최초 빈 데이터 디렉터리일 때만 실행: talktrip@'%' 로 컨테이너 IP에서 접속 허용
       - ./docker/mysql/init/00-create-databases.sql:/docker-entrypoint-initdb.d/00-create-databases.sql:ro
       - ./docker/mysql/init/01-remote-grants.sql:/docker-entrypoint-initdb.d/01-remote-grants.sql:ro
+      - ./docker/mysql/init/02-create-kafka-event-tables.sql:/docker-entrypoint-initdb.d/02-create-kafka-event-tables.sql:ro
+      - ./docker/mysql/init/03-likeDB.sql:/docker-entrypoint-initdb.d/03-likeDB.sql:ro
+      - ./docker/mysql/init/04-productDB.sql:/docker-entrypoint-initdb.d/04-productDB.sql:ro
     restart: unless-stopped
     networks:
       - talktrip-network
@@ -62,9 +65,10 @@ services:
       - MYSQL_USER=talktrip
       - MYSQL_PASSWORD=talktrip123
       # 채팅 MSA는 chatDB 사용 (talktrip-chatting-service/application.yaml 기준)
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/chatDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/chatDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
       - SPRING_DATASOURCE_USERNAME=talktrip
       - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
       - SPRING_SESSION_STORE_TYPE=none
       - SPRING_DATA_REDIS_HOST=redis
       - SPRING_DATA_REDIS_PORT=6379
@@ -80,6 +84,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - talktrip-network
     healthcheck:
@@ -96,30 +102,42 @@ services:
       - "18081:8081"
     environment:
       - SERVER_PORT=8081
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/emailDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
       - TZ=Asia/Seoul
     depends_on:
+      mysql:
+        condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - talktrip-network
     restart: unless-stopped
 
   talktrip-order-purchases-service:
     build: ../talktrip-order-purchases-service
+    pull_policy: build
     container_name: talktrip-order-purchases-service
     ports:
       - "18085:8085"
     environment:
       - SERVER_PORT=8085
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/orderDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/orderDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
       - SPRING_DATASOURCE_USERNAME=talktrip
       - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
       - TZ=Asia/Seoul
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
     networks:
@@ -133,11 +151,19 @@ services:
       - "18084:8084"
     environment:
       - SERVER_PORT=8084
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/clickDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
       - TZ=Asia/Seoul
     depends_on:
+      mysql:
+        condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - talktrip-network
     restart: unless-stopped
@@ -150,18 +176,15 @@ services:
     environment:
       - SERVER_PORT=8082
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/statsDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
-      - SPRING_DATASOURCE_USERNAME=talktrip
-      - SPRING_DATASOURCE_PASSWORD=talktrip123
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - TZ=Asia/Seoul
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       redis:
-        condition: service_healthy
-      mysql:
         condition: service_healthy
     networks:
       - talktrip-network
@@ -175,18 +198,109 @@ services:
     environment:
       - SERVER_PORT=8083
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
-      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/trendDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
-      - SPRING_DATASOURCE_USERNAME=talktrip
-      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - TZ=Asia/Seoul
     depends_on:
       kafka:
         condition: service_healthy
-      mysql:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
         condition: service_healthy
     networks:
       - talktrip-network
     restart: unless-stopped
+
+  talktrip-like-service:
+    build: ../talktrip-like-service
+    pull_policy: build
+    container_name: talktrip-like-service
+    ports:
+      - "18088:8088"
+    environment:
+      - SERVER_PORT=8088
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/likeDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-product-service:
+    build: ../talktrip-product-service
+    pull_policy: build
+    container_name: talktrip-product-service
+    ports:
+      # stats-service가 이미 18082 사용 — 호스트에서 product API 직접 호출 시 18086
+      - "18086:8082"
+    environment:
+      - SERVER_PORT=8082
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/productDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+
+  talktrip-app:
+    build: ./back_end
+    container_name: talktrip-app
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:p6spy:mysql://mysql:3306/talktrip?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8&useUnicode=true
+      - SPRING_DATASOURCE_USERNAME=talktrip
+      - SPRING_DATASOURCE_PASSWORD=talktrip123
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=com.p6spy.engine.spy.P6SpyDriver
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:39092
+      - TZ=Asia/Seoul
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - talktrip-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   
 
@@ -214,6 +328,10 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # KRaft broker+controller 단일 JVM: 호스트 CPU·GC·스냅샷 등으로 컨트롤러 스레드가 밀리면
+      # "controller event queue overloaded" / BROKER_HEARTBEAT REQUEST_TIMED_OUT 가 날 수 있음.
+      KAFKA_HEAP_OPTS: "-Xmx2G -Xms2G"
+      KAFKA_BROKER_SESSION_TIMEOUT_MS: "18000"
     networks:
       - talktrip-network
     restart: unless-stopped
@@ -243,6 +361,7 @@ services:
         payment-success:3:1
         product-click-stats:3:1
         order-purchase-stats:3:1
+        like-change:3:1
     command:
       - bash
       - -lc
@@ -300,10 +419,11 @@ services:
     networks:
       - talktrip-network
     depends_on:
-      - nginx
-    command: run /scripts/chat-load-test.js
-    profiles:
-      - testing
+      - talktrip-app
+    # 기본으로는 대기 상태로 유지하고, 필요할 때 docker exec로 스크립트를 실행합니다.
+    # 예) docker exec talktrip-k6 k6 run /scripts/product-list-warm-cache-tps.js
+    entrypoint: ["sh", "-lc"]
+    command: ["sleep infinity"]
 
   # k6 프로젝트 테스트
   k6-project:

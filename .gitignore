@@ -1,0 +1,3 @@
+# Docker Compose MySQL 데이터 디렉터리 (바이너리/개인 DB 스냅샷 — 저장소에 올리지 않음)
+docker-data/
+.idea/

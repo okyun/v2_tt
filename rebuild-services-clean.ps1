@@ -3,8 +3,9 @@
 # powershell -NoProfile -ExecutionPolicy Bypass -File ".\tt\rebuild-services-clean.ps1"
 #
 # (JAR 이미 빌드된 뒤) compose만 다시 올리기 — tt 폴더에서:
-#   docker compose --env-file ..\.env up -d --build --force-recreate talktrip-chat-service talktrip-order-email-service talktrip-order-purchases-service talktrip-product-click-service talktrip-stats-service talktrip-trending-service kafka-ui
-# 상세·전체 한 줄 예시: tt\back_end\docs\LOCAL_DEV_COMMANDS.md 의 「2. Docker — 마이크로서비스만 재빌드·재기동」
+#   docker compose --env-file ..\.env up -d --build --force-recreate talktrip-chat-service talktrip-order-email-service talktrip-order-purchases-service talktrip-product-click-service talktrip-stats-service talktrip-trending-service talktrip-like-service kafka-ui
+#  docker compose --env-file ..\.env up -d --build --force-recreate talktrip-app talktrip-chat-service talktrip-order-email-service talktrip-order-purchases-service talktrip-product-click-service talktrip-stats-service talktrip-trending-service talktrip-like-service kafka-ui
+ #상세·전체 한 줄 예시: tt\back_end\docs\LOCAL_DEV_COMMANDS.md 의 「2. Docker — 마이크로서비스만 재빌드·재기동」
 # 중지(tt 폴더, 이 스크립트와 동일 위치): docker compose down  (또는 docker compose --env-file ..\.env down)
 
 Set-Location $PSScriptRoot
@@ -32,14 +33,16 @@ Build-BootJar "..\\talktrip-order-purchases-service"
 Build-BootJar "..\\talktrip-product-click-service"
 Build-BootJar "..\\talktrip-stats-service"
 Build-BootJar "..\\talktrip-trending-service"
+Build-BootJar "..\\talktrip-like-service"
 
-# 2) Docker 이미지 재빌드/재기동 (마이크로서비스 6개 + kafka-ui)
+# 2) Docker 이미지 재빌드/재기동 (마이크로서비스 7개 + kafka-ui)
 $services = @(
   "talktrip-chat-service", "talktrip-order-email-service", "talktrip-order-purchases-service",
-  "talktrip-product-click-service", "talktrip-stats-service", "talktrip-trending-service", "kafka-ui"
+  "talktrip-product-click-service", "talktrip-stats-service", "talktrip-trending-service",
+  "talktrip-like-service", "kafka-ui"
 )
 docker compose @composeEnvArgs up -d --build --force-recreate @services
 
 Write-Host ""
-Write-Host "재빌드/재기동 완료 요청: chatting/order-email/order-purchases/product-click/stats/trending + kafka-ui (http://localhost:8086)" -ForegroundColor Green
+Write-Host "재빌드/재기동 완료 요청: chatting/order-email/order-purchases/product-click/stats/trending/like + kafka-ui (http://localhost:8086)" -ForegroundColor Green
 Write-Host "상태 확인: cd tt; docker compose --env-file ..\\.env ps" -ForegroundColor Cyan
